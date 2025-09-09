@@ -1,0 +1,78 @@
+name: FreeBSD Build
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-freebsd:
+    runs-on: ubuntu-latest
+    name: Build FreeBSD Binary
+    env:
+      CROSS_TAGLIB_VERSION: 2.1.1-1  # 与项目中使用的TagLib版本保持一致
+      GO_VERSION: 1.22  # 根据项目go.mod中的版本调整
+      PLATFORM: freebsd/amd64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare Git Version Info
+        id: git-info
+        run: |
+          GIT_SHA=$(git rev-parse --short HEAD)
+          GIT_TAG=$(git describe --tags `git rev-list --tags --max-count=1`)-SNAPSHOT
+          echo "GIT_SHA=$GIT_SHA" >> $GITHUB_ENV
+          echo "GIT_TAG=$GIT_TAG" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Download TagLib for FreeBSD
+        uses: ./.github/actions/download-taglib  # 复用项目现有TagLib下载动作
+        with:
+          version: ${{ env.CROSS_TAGLIB_VERSION }}
+          platform: freebsd-amd64  # 指定FreeBSD平台的TagLib
+
+      - name: Build FreeBSD Binary via Docker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ env.PLATFORM }}
+          outputs: |
+            type=local,dest=./output/${{ env.PLATFORM }}
+          target: binary
+          build-args: |
+            GIT_SHA=${{ env.GIT_SHA }}
+            GIT_TAG=${{ env.GIT_TAG }}
+            CROSS_TAGLIB_VERSION=${{ env.CROSS_TAGLIB_VERSION }}
+
+      - name: Verify Build Output
+        run: |
+          ls -l ./output/${{ env.PLATFORM }}
+          # 检查是否生成了可执行文件
+          if [ ! -f ./output/${{ env.PLATFORM }}/navidrome ]; then
+            echo "FreeBSD binary not found!"
+            exit 1
+          fi
+          # 验证文件类型（FreeBSD ELF格式）
+          file ./output/${{ env.PLATFORM }}/navidrome | grep -q "FreeBSD" || (echo "Invalid binary format"; exit 1)
+
+      - name: Package Binary
+        run: |
+          mkdir -p artifacts
+          cp ./output/${{ env.PLATFORM }}/navidrome artifacts/
+          cp LICENSE README.md artifacts/
+          zip -r navidrome-freebsd-amd64-${{ env.GIT_SHA }}.zip artifacts/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: navidrome-freebsd-amd64
+          path: navidrome-freebsd-amd64-${{ env.GIT_SHA }}.zip
+          retention-days: 14
