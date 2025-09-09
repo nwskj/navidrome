@@ -2,10 +2,10 @@ name: FreeBSD amd64 Build
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, master ]
     tags: [ 'v*' ]  # 推送标签时也触发
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, master ]
   workflow_dispatch:  # 允许手动触发（便于测试）
 
 jobs:
