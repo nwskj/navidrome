@@ -23,7 +23,7 @@ jobs:
         uses: vmactions/freebsd-vm@v1
         with:
           # 关键修复：使用完整版本号（14.0/14.1/14.2 均可，推荐 14.0 稳定版）
-          release: 14.0
+          release: 14.1
           usesh: true
           sync: sshfs  # 文件同步方式：确保代码能在虚拟机中访问
           # 准备阶段：安装依赖（FreeBSD 包管理器）
