@@ -1,0 +1,90 @@
+name: FreeBSD amd64 Build
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-freebsd:
+    runs-on: macos-14  # 通过虚拟机运行FreeBSD
+    name: Build for FreeBSD amd64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build on FreeBSD
+        id: freebsd-build
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: 14.0
+          usesh: true
+          sync: sshfs
+          prepare: |
+            # 更新包管理器并安装依赖
+            pkg update -f
+            pkg install -y \
+              go1.22 \
+              node18 \
+              npm \
+              git \
+              clang \
+              libtag \
+              sqlite3 \
+              gmake \
+              zip
+
+            # 验证依赖版本
+            go version
+            node --version
+            clang --version
+
+          run: |
+            # 环境变量配置
+            export GOPATH=$HOME/go
+            export PATH=$GOPATH/bin:$PATH
+            export CGO_ENABLED=1  # 必须启用CGO（依赖TagLib和SQLite的C绑定）
+            export GIT_SHA=$(git rev-parse --short HEAD)
+            export GIT_TAG=$(git describe --tags `git rev-list --tags --max-count=1`)-SNAPSHOT
+
+            # 显示系统信息
+            uname -a
+            freebsd-version
+
+            # 下载Go依赖
+            gmake download-deps
+
+            # 构建前端资源
+            cd ui && npm install && npm run build && cd ..
+
+            # 编译后端（使用项目Makefile确保正确的构建标签和参数）
+            gmake build \
+              GOOS=freebsd \
+              GOARCH=amd64 \
+              GIT_SHA=$GIT_SHA \
+              GIT_TAG=$GIT_TAG
+
+            # 验证编译结果
+            if [ -f navidrome ]; then
+              echo "Build successful!"
+              ./navidrome --version
+
+              # 打包产物
+              mkdir -p artifacts
+              cp navidrome artifacts/
+              cp LICENSE README.md artifacts/
+              zip -r navidrome-freebsd-amd64-$GIT_SHA.zip artifacts/
+            else
+              echo "Build failed: navidrome binary not found"
+              exit 1
+            fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: navidrome-freebsd-amd64
+          path: navidrome-freebsd-amd64-*.zip
+          retention-days: 14
