@@ -2,89 +2,127 @@ name: FreeBSD amd64 Build
 
 on:
   push:
-    branches: [ main, develop, master, ]
+    branches: [ main, develop ]
+    tags: [ 'v*' ]  # 推送标签时也触发
   pull_request:
-    branches: [ main, develop, master ]
+    branches: [ main, develop ]
+  workflow_dispatch:  # 允许手动触发（便于测试）
 
 jobs:
   build-freebsd:
-    runs-on: macos-14  # 通过虚拟机运行FreeBSD
+    runs-on: macos-14  # 宿主系统：macOS 支持 FreeBSD 虚拟机
     name: Build for FreeBSD amd64
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # 拉取完整历史，确保标签信息可用
 
-      - name: Build on FreeBSD
+      - name: Build on FreeBSD 14.0
         id: freebsd-build
         uses: vmactions/freebsd-vm@v1
         with:
+          # 关键修复：使用完整版本号（14.0/14.1/14.2 均可，推荐 14.0 稳定版）
           release: 14.0
           usesh: true
-          sync: sshfs
+          sync: sshfs  # 文件同步方式：确保代码能在虚拟机中访问
+          # 准备阶段：安装依赖（FreeBSD 包管理器）
           prepare: |
-            # 更新包管理器并安装依赖
+            # 强制更新包索引（避免依赖版本过时）
             pkg update -f
+            # 安装编译所需依赖（按项目需求调整）
             pkg install -y \
-              go1.22 \
-              node18 \
-              npm \
-              git \
-              clang \
-              libtag \
-              sqlite3 \
-              gmake \
-              zip
-
-            # 验证依赖版本
+              go1.22 \          # Go 编译器（匹配项目 go.mod 版本）
+              node18 \          # Node.js（前端构建）
+              npm \             # npm（前端依赖管理）
+              git \             # Git（版本信息获取）
+              clang \           # C 编译器（CGO 依赖）
+              libtag \          # TagLib（音频标签解析）
+              sqlite3 \         # SQLite（数据库支持）
+              gmake \           # GNU Make（项目 Makefile 依赖）
+              zip \             # 打包产物
+              bash              # 确保 bash 可用（部分脚本依赖）
+            
+            # 验证依赖版本（确保安装成功）
+            echo "=== 依赖版本验证 ==="
             go version
             node --version
+            npm --version
             clang --version
+            gmake --version
 
+          # 核心构建阶段：在 FreeBSD 虚拟机中执行编译
           run: |
-            # 环境变量配置
+            # 1. 配置环境变量
             export GOPATH=$HOME/go
             export PATH=$GOPATH/bin:$PATH
-            export CGO_ENABLED=1  # 必须启用CGO（依赖TagLib和SQLite的C绑定）
+            export CGO_ENABLED=1  # 必须启用 CGO（TagLib/SQLite 依赖 C 绑定）
+            # 获取 Git 版本信息（匹配项目 Makefile 逻辑）
             export GIT_SHA=$(git rev-parse --short HEAD)
-            export GIT_TAG=$(git describe --tags `git rev-list --tags --max-count=1`)-SNAPSHOT
+            # 处理无标签的情况（避免命令失败）
+            export GIT_TAG=$(git describe --tags `git rev-list --tags --max-count=1 2>/dev/null || echo HEAD`)
+            if [[ $GIT_TAG == "HEAD" ]]; then
+              export GIT_TAG="v0.0.0-SNAPSHOT"  # 无标签时设置默认版本
+            else
+              export GIT_TAG="${GIT_TAG}-SNAPSHOT"
+            fi
 
-            # 显示系统信息
+            # 2. 显示系统与环境信息（便于调试）
+            echo "=== 系统信息 ==="
             uname -a
             freebsd-version
+            echo "=== 环境变量 ==="
+            echo "GOPATH: $GOPATH"
+            echo "CGO_ENABLED: $CGO_ENABLED"
+            echo "GIT_SHA: $GIT_SHA"
+            echo "GIT_TAG: $GIT_TAG"
 
-            # 下载Go依赖
-            gmake download-deps
+            # 3. 下载 Go 依赖
+            echo "=== 下载 Go 依赖 ==="
+            gmake download-deps || { echo "Go 依赖下载失败"; exit 1; }
 
-            # 构建前端资源
-            cd ui && npm install && npm run build && cd ..
+            # 4. 构建前端资源（UI）
+            echo "=== 构建前端 ==="
+            cd ui || { echo "UI 目录不存在"; exit 1; }
+            npm install --registry=https://registry.npm.taobao.org  # 国内源加速（可选）
+            npm run build || { echo "前端构建失败"; exit 1; }
+            cd ..  # 回到项目根目录
 
-            # 编译后端（使用项目Makefile确保正确的构建标签和参数）
+            # 5. 编译后端二进制（使用项目 Makefile）
+            echo "=== 编译后端 ==="
             gmake build \
-              GOOS=freebsd \
-              GOARCH=amd64 \
-              GIT_SHA=$GIT_SHA \
-              GIT_TAG=$GIT_TAG
+              GOOS=freebsd \      # 目标系统：FreeBSD
+              GOARCH=amd64 \      # 目标架构：amd64
+              GIT_SHA=$GIT_SHA \  # 注入 Git 哈希
+              GIT_TAG=$GIT_TAG \  # 注入 Git 标签
+              LDFLAGS="-s -w"     # 移除调试信息，减小二进制体积
+            || { echo "后端编译失败"; exit 1; }
 
-            # 验证编译结果
+            # 6. 验证编译结果
+            echo "=== 验证产物 ==="
             if [ -f navidrome ]; then
               echo "Build successful!"
-              ./navidrome --version
-
-              # 打包产物
+              # 验证二进制文件格式（确保是 FreeBSD amd64 可执行文件）
+              file navidrome | grep -q "FreeBSD amd64" || { echo "无效的二进制格式"; exit 1; }
+              # 验证版本信息（确保版本注入正确）
+              ./navidrome --version || { echo "版本验证失败"; exit 1; }
+              
+              # 7. 打包产物（便于下载）
+              echo "=== 打包产物 ==="
               mkdir -p artifacts
               cp navidrome artifacts/
               cp LICENSE README.md artifacts/
-              zip -r navidrome-freebsd-amd64-$GIT_SHA.zip artifacts/
+              zip -r navidrome-freebsd-amd64-${GIT_SHA}.zip artifacts/
+              echo "产物路径：$(pwd)/navidrome-freebsd-amd64-${GIT_SHA}.zip"
             else
-              echo "Build failed: navidrome binary not found"
+              echo "Build failed: navidrome 二进制文件未生成"
               exit 1
             fi
 
-      - name: Upload build artifact
+      # 8. 上传编译产物（便于下载使用）
+      - name: Upload FreeBSD Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: navidrome-freebsd-amd64
-          path: navidrome-freebsd-amd64-*.zip
-          retention-days: 14
+          path: navidrome-freebsd-amd64-*.zip  # 匹配打包的产物
+          retention-days: 14  # 产物保留 14 天
