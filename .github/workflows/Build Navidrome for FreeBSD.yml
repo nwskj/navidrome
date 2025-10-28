@@ -1,0 +1,74 @@
+name: Build Navidrome for FreeBSD
+
+# 触发条件：推送到 main 分支或创建 Pull Request 到 main 分支
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+# 工作流任务
+jobs:
+  build-freebsd:
+    # 使用 FreeBSD 最新版本作为运行环境（GitHub 托管的 FreeBSD 虚拟机）
+    runs-on: freebsd-latest
+
+    steps:
+      # 步骤 1：拉取代码仓库
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive  # 如果项目有子模块，需要递归拉取
+
+      # 步骤 2：安装依赖（Go 环境，Navidrome 基于 Go 开发）
+      - name: Install dependencies
+        run: |
+          # 更新包管理器
+          sudo pkg update -f
+          # 安装 Go（根据项目实际需要的版本调整，例如 1.21+）
+          sudo pkg install -y go
+          # 安装其他可能需要的依赖（如 ffmpeg 用于音频处理，make 用于构建）
+          sudo pkg install -y ffmpeg make
+
+      # 步骤 3：查看 Go 版本（验证安装）
+      - name: Check Go version
+        run: go version
+
+      # 步骤 4：构建项目（根据项目实际的构建命令调整）
+      - name: Build Navidrome
+        run: |
+          # 进入项目目录（如果需要）
+          # cd path/to/project
+          
+          # 设置 Go 环境变量（可选，指定输出目录等）
+          export GOPATH=$HOME/go
+          export PATH=$GOPATH/bin:$PATH
+          
+          # 执行构建命令（参考 Navidrome 官方构建方式，可能需要 make 或直接 go build）
+          # 若项目有 Makefile，优先使用 make
+          make build-freebsd  # 假设 Makefile 中有针对 FreeBSD 的构建目标
+          
+          # 若没有 Makefile，直接用 go build（根据实际入口文件调整）
+          # go build -o navidrome-freebsd -ldflags "-s -w" ./cmd/navidrome
+
+      # 步骤 5：验证构建产物
+      - name: Verify build output
+        run: |
+          # 检查是否生成了可执行文件（根据实际输出文件名调整）
+          if [ -f "navidrome" ]; then
+            echo "Build successful! Executable file exists."
+            # 输出文件信息
+            file navidrome
+          else
+            echo "Build failed! Executable file not found."
+            exit 1
+          fi
+
+      # 步骤 6：上传构建产物作为 Artifact（可选，方便下载）
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: navidrome-freebsd
+          path: |
+            navidrome  # 构建生成的可执行文件路径
+            # 如需包含配置文件或其他产物，在此添加路径
